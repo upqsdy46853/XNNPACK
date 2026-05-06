@@ -506,6 +506,17 @@ struct Image {
   std::vector<uint8_t> rgb;
 };
 
+struct ResizeCoefficients {
+  struct Bounds {
+    size_t start = 0;
+    size_t length = 0;
+  };
+
+  size_t kernel_size = 0;
+  std::vector<Bounds> bounds;
+  std::vector<double> weights;
+};
+
 Image LoadBmp(const std::string& path) {
   const std::vector<uint8_t> bytes = ReadBinaryFile(path);
   if (bytes.size() < 54 || bytes[0] != 'B' || bytes[1] != 'M') {
@@ -547,22 +558,110 @@ Image LoadBmp(const std::string& path) {
   return image;
 }
 
-std::vector<float> ResizeAndNormalizeNearest(const Image& image, size_t width,
-                                             size_t height) {
+double BicubicFilter(double x) {
+  x = std::fabs(x);
+  if (x < 1.0) {
+    return ((1.5 * x - 2.5) * x) * x + 1.0;
+  }
+  if (x < 2.0) {
+    return (((-0.5 * x + 2.5) * x - 4.0) * x) + 2.0;
+  }
+  return 0.0;
+}
+
+ResizeCoefficients PrecomputePillowBicubicCoefficients(size_t input_size,
+                                                       size_t output_size) {
+  constexpr double kBicubicSupport = 2.0;
+  const double scale = static_cast<double>(input_size) / output_size;
+  const double filter_scale = std::max(scale, 1.0);
+  const double support = kBicubicSupport * filter_scale;
+
+  ResizeCoefficients coefficients;
+  coefficients.kernel_size =
+      static_cast<size_t>(std::ceil(support)) * 2 + 1;
+  coefficients.bounds.resize(output_size);
+  coefficients.weights.assign(output_size * coefficients.kernel_size, 0.0);
+
+  for (size_t output = 0; output < output_size; output++) {
+    const double center = (static_cast<double>(output) + 0.5) * scale;
+    int64_t xmin = static_cast<int64_t>(center - support + 0.5);
+    int64_t xmax = static_cast<int64_t>(center + support + 0.5);
+    xmin = std::max<int64_t>(xmin, 0);
+    xmax = std::min<int64_t>(xmax, static_cast<int64_t>(input_size));
+
+    const size_t start = static_cast<size_t>(xmin);
+    const size_t length = static_cast<size_t>(std::max<int64_t>(xmax - xmin, 0));
+    coefficients.bounds[output] = ResizeCoefficients::Bounds{start, length};
+
+    double weights_sum = 0.0;
+    double* weights =
+        coefficients.weights.data() + output * coefficients.kernel_size;
+    for (size_t i = 0; i < length; i++) {
+      weights[i] = BicubicFilter(
+          (static_cast<double>(start + i) - center + 0.5) / filter_scale);
+      weights_sum += weights[i];
+    }
+    if (weights_sum != 0.0) {
+      for (size_t i = 0; i < length; i++) {
+        weights[i] /= weights_sum;
+      }
+    }
+  }
+  return coefficients;
+}
+
+uint8_t ClampToByte(double value) {
+  if (value <= 0.0) {
+    return 0;
+  }
+  if (value >= 255.0) {
+    return 255;
+  }
+  return static_cast<uint8_t>(value + 0.5);
+}
+
+std::vector<float> ResizeAndNormalizePillowBicubic(const Image& image,
+                                                   size_t width,
+                                                   size_t height) {
+  const ResizeCoefficients x_coefficients =
+      PrecomputePillowBicubicCoefficients(image.width, width);
+  const ResizeCoefficients y_coefficients =
+      PrecomputePillowBicubicCoefficients(image.height, height);
+
+  std::vector<uint8_t> horizontal(
+      static_cast<size_t>(image.height) * width * 3);
+  for (size_t y = 0; y < static_cast<size_t>(image.height); y++) {
+    for (size_t x = 0; x < width; x++) {
+      const ResizeCoefficients::Bounds bounds = x_coefficients.bounds[x];
+      const double* weights =
+          x_coefficients.weights.data() + x * x_coefficients.kernel_size;
+      for (size_t c = 0; c < 3; c++) {
+        double value = 0.0;
+        for (size_t i = 0; i < bounds.length; i++) {
+          const size_t source = (y * image.width + bounds.start + i) * 3 + c;
+          value += weights[i] * static_cast<double>(image.rgb[source]);
+        }
+        horizontal[(y * width + x) * 3 + c] = ClampToByte(value);
+      }
+    }
+  }
+
   std::vector<float> input(WithXnnExtraBytes(width * height * 3), 0.0f);
   for (size_t y = 0; y < height; y++) {
-    const size_t source_y =
-        std::min(static_cast<size_t>(image.height - 1),
-                 y * static_cast<size_t>(image.height) / height);
+    const ResizeCoefficients::Bounds bounds = y_coefficients.bounds[y];
+    const double* weights =
+        y_coefficients.weights.data() + y * y_coefficients.kernel_size;
     for (size_t x = 0; x < width; x++) {
-      const size_t source_x =
-          std::min(static_cast<size_t>(image.width - 1),
-                   x * static_cast<size_t>(image.width) / width);
-      const size_t source = (source_y * image.width + source_x) * 3;
-      const size_t dest = (y * width + x) * 3;
-      input[dest + 0] = (static_cast<float>(image.rgb[source + 0]) - kInputMean) / kInputStd;
-      input[dest + 1] = (static_cast<float>(image.rgb[source + 1]) - kInputMean) / kInputStd;
-      input[dest + 2] = (static_cast<float>(image.rgb[source + 2]) - kInputMean) / kInputStd;
+      for (size_t c = 0; c < 3; c++) {
+        double value = 0.0;
+        for (size_t i = 0; i < bounds.length; i++) {
+          const size_t source = ((bounds.start + i) * width + x) * 3 + c;
+          value += weights[i] * static_cast<double>(horizontal[source]);
+        }
+        const uint8_t pixel = ClampToByte(value);
+        input[(y * width + x) * 3 + c] =
+            (static_cast<float>(pixel) - kInputMean) / kInputStd;
+      }
     }
   }
   return input;
@@ -611,8 +710,8 @@ int main(int argc, char** argv) {
 
     Image image = LoadBmp(image_path);
     std::vector<float> input =
-        ResizeAndNormalizeNearest(image, input_tensor.shape[2],
-                                  input_tensor.shape[1]);
+        ResizeAndNormalizePillowBicubic(image, input_tensor.shape[2],
+                                        input_tensor.shape[1]);
     std::vector<float> output(WithXnnExtraBytes(NumElements(output_tensor.shape)),
                               0.0f);
 
