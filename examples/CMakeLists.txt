@@ -1,0 +1,20 @@
+# Copyright 2026 Google LLC
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+IF(NOT TARGET XNNPACK)
+  MESSAGE(FATAL_ERROR "XNNPACK_BUILD_EXAMPLES requires XNNPACK_BUILD_LIBRARY=ON")
+ENDIF()
+
+FUNCTION(XNNPACK_ADD_EXAMPLE TARGET_NAME SOURCE_FILE)
+  ADD_EXECUTABLE(${TARGET_NAME} ${SOURCE_FILE})
+  TARGET_LINK_LIBRARIES(${TARGET_NAME} PRIVATE XNNPACK)
+  TARGET_INCLUDE_DIRECTORIES(${TARGET_NAME} PRIVATE "${PROJECT_SOURCE_DIR}")
+  SET_TARGET_PROPERTIES(${TARGET_NAME} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+ENDFUNCTION()
+
+XNNPACK_ADD_EXAMPLE(simple_mlp_xnnpack simple_mlp_xnnpack.cc)
+XNNPACK_ADD_EXAMPLE(simple_cnn_xnnpack simple_cnn_xnnpack.cc)
+XNNPACK_ADD_EXAMPLE(mobilenet_label_xnnpack mobilenet_label_xnnpack.cc)

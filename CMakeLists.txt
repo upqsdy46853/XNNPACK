@@ -59,6 +59,7 @@ OPTION(XNNPACK_ENABLE_MEMOPT "Build XNNPACK with optimized memory allocation sch
 OPTION(XNNPACK_ENABLE_SPARSE "Build XNNPACK with graph rewriting for sparse inference" ON)
 OPTION(XNNPACK_BUILD_LIBRARY "Build XNNPACK library" ON)
 OPTION(XNNPACK_BUILD_TESTS "Build XNNPACK unit tests" ON)
+OPTION(XNNPACK_BUILD_EXAMPLES "Build XNNPACK examples" OFF)
 OPTION(XNNPACK_BUILD_ALL_MICROKERNELS "Builds all XNNPACK Microkernels" ON)
 OPTION(XNNPACK_BUILD_BENCHMARKS "Build XNNPACK benchmarks" ON)
 OPTION(XNNPACK_BUILD_WITH_LIBM "Build XNNPACK with libm, can turn off on Windows to avoid mutiple math functions issue." ON)
@@ -1359,6 +1360,11 @@ IF(XNNPACK_ENABLE_KLEIDIAI)
     ENDIF()
   ENDIF()
   TARGET_LINK_LIBRARIES(xnnpack-base INTERFACE kleidiai)
+ENDIF()
+
+# ---[ XNNPACK examples
+IF(XNNPACK_BUILD_EXAMPLES)
+  ADD_SUBDIRECTORY(examples)
 ENDIF()
 
 # ---[ XNNPACK unit tests
